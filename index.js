@@ -16,63 +16,37 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const lineClient = new line.Client(lineConfig);
 
 // 解析 JSON
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-// 記錄所有請求
-app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-  console.log('Headers:', req.headers);
-  if (req.body) console.log('Body:', JSON.stringify(req.body, null, 2));
-  next();
-});
+app.use(express.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  }
+}));
 
 // 測試路由
 app.get('/', (req, res) => {
   res.send('Bot is running!');
 });
 
-// 從 Discord 接收訊息的路由
-app.post('/discord-webhook', async (req, res) => {
-  console.log('Received from Discord:', req.body);
-  
-  try {
-    if (!req.body.content) {
-      throw new Error('No message content');
-    }
-
-    // 發送到 LINE
-    await lineClient.broadcast({
-      type: 'text',
-      text: `Discord: ${req.body.content}`
-    });
-
-    console.log('Successfully sent to LINE');
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Error sending to LINE:', error);
-    res.status(500).json({ error: error.message });
-  }
+// LINE Webhook 驗證
+app.get('/webhook', (req, res) => {
+  res.sendStatus(200);
 });
 
-// LINE Webhook
+// LINE Webhook 接收訊息
 app.post('/webhook', line.middleware(lineConfig), async (req, res) => {
-  console.log('Received from LINE:', req.body);
-  
   try {
-    const events = req.body.events;
+    const events = req.body.events || [];
     await Promise.all(events.map(handleEvent));
-    res.json({ success: true });
+    res.status(200).json({ status: 'ok' });
   } catch (err) {
-    console.error('Webhook error:', err);
-    res.status(500).json({ error: err.message });
+    console.error('Webhook Error:', err);
+    res.status(200).json({ status: 'error', message: err.message });
   }
 });
 
 // 處理 LINE 事件
 async function handleEvent(event) {
-  console.log('Processing event:', event);
-
+  console.log('Event:', event);
   if (event.type !== 'message' || event.message.type !== 'text') {
     return null;
   }
@@ -84,19 +58,19 @@ async function handleEvent(event) {
     });
 
     // 回覆 LINE 訊息
-    return await lineClient.replyMessage(event.replyToken, {
+    return lineClient.replyMessage(event.replyToken, {
       type: 'text',
-      text: '訊息已轉發到 Discord!'
+      text: '訊息已轉發到 Discord！'
     });
   } catch (error) {
-    console.error('Event handling error:', error);
+    console.error('Handle Event Error:', error);
+    return null;
   }
 }
 
 // Discord 發送函數
 async function sendToDiscord(payload) {
   try {
-    console.log('Sending to Discord:', payload);
     const response = await fetch(DISCORD_WEBHOOK_URL, {
       method: 'POST',
       headers: {
@@ -106,22 +80,50 @@ async function sendToDiscord(payload) {
     });
     
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Discord API error: ${response.status}, ${errorText}`);
+      throw new Error(`Discord API error: ${response.status}`);
     }
-    console.log('Successfully sent to Discord');
   } catch (error) {
-    console.error('Discord sending error:', error);
+    console.error('Discord Send Error:', error);
     throw error;
   }
 }
+
+// 從 Discord 接收訊息
+app.post('/discord-webhook', async (req, res) => {
+  try {
+    const content = req.body.content;
+    if (!content) {
+      throw new Error('No content in Discord message');
+    }
+
+    await lineClient.broadcast({
+      type: 'text',
+      text: `Discord: ${content}`
+    });
+
+    res.status(200).json({ status: 'ok' });
+  } catch (error) {
+    console.error('Discord Webhook Error:', error);
+    res.status(200).json({ status: 'error', message: error.message });
+  }
+});
+
+// 錯誤處理
+app.use((err, req, res, next) => {
+  console.error(err);
+  res.status(200).json({
+    status: 'error',
+    message: err.message
+  });
+});
 
 // 啟動伺服器
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
-  console.log('Environment variables check:');
-  console.log('LINE Channel Secret:', lineConfig.channelSecret ? 'Set' : 'Not set');
-  console.log('LINE Channel Access Token:', lineConfig.channelAccessToken ? 'Set' : 'Not set');
-  console.log('Discord Webhook URL:', DISCORD_WEBHOOK_URL ? 'Set' : 'Not set');
+  console.log('LINE Bot Config:', {
+    channelSecret: lineConfig.channelSecret ? 'Set' : 'Not set',
+    channelAccessToken: lineConfig.channelAccessToken ? 'Set' : 'Not set',
+    webhookUrl: DISCORD_WEBHOOK_URL ? 'Set' : 'Not set'
+  });
 });
