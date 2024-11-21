@@ -15,66 +15,81 @@ const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 // LINE Bot client
 const lineClient = new line.Client(lineConfig);
 
-// 解析 JSON 和 URL 編碼的請求
+// 解析 JSON
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// 主頁路由
+// 記錄所有請求
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  console.log('Headers:', req.headers);
+  if (req.body) console.log('Body:', JSON.stringify(req.body, null, 2));
+  next();
+});
+
+// 測試路由
 app.get('/', (req, res) => {
   res.send('Bot is running!');
 });
 
-// LINE Webhook 路由
-app.post('/webhook', (req, res) => {
-  console.log('Received webhook request');
+// 從 Discord 接收訊息的路由
+app.post('/discord-webhook', async (req, res) => {
+  console.log('Received from Discord:', req.body);
   
-  // 驗證請求的簽名
-  const signature = req.get('x-line-signature');
-  if (!signature) {
-    console.log('No signature');
-    return res.status(400).json({ error: 'No signature' });
-  }
+  try {
+    if (!req.body.content) {
+      throw new Error('No message content');
+    }
 
-  Promise.resolve()
-    .then(() => {
-      console.log('Request body:', req.body);
-      
-      // 處理事件
-      const events = req.body.events;
-      return Promise.all(events.map(handleEvent));
-    })
-    .then(() => {
-      res.status(200).json({ success: true });
-    })
-    .catch((err) => {
-      console.error('Error handling webhook:', err);
-      res.status(500).json({ error: err.message });
+    // 發送到 LINE
+    await lineClient.broadcast({
+      type: 'text',
+      text: `Discord: ${req.body.content}`
     });
+
+    console.log('Successfully sent to LINE');
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error sending to LINE:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// LINE Webhook
+app.post('/webhook', line.middleware(lineConfig), async (req, res) => {
+  console.log('Received from LINE:', req.body);
+  
+  try {
+    const events = req.body.events;
+    await Promise.all(events.map(handleEvent));
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Webhook error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // 處理 LINE 事件
 async function handleEvent(event) {
-  console.log('Event type:', event.type);
-  
+  console.log('Processing event:', event);
+
   if (event.type !== 'message' || event.message.type !== 'text') {
-    console.log('Skipping non-text message');
-    return Promise.resolve(null);
+    return null;
   }
 
-  // 發送到 Discord
   try {
+    // 發送到 Discord
     await sendToDiscord({
-      content: `LINE使用者: ${event.message.text}`
+      content: `LINE: ${event.message.text}`
     });
 
     // 回覆 LINE 訊息
-    return lineClient.replyMessage(event.replyToken, {
+    return await lineClient.replyMessage(event.replyToken, {
       type: 'text',
-      text: '訊息已轉發到 Discord！'
+      text: '訊息已轉發到 Discord!'
     });
   } catch (error) {
-    console.error('Error handling event:', error);
-    return Promise.resolve(null);
+    console.error('Event handling error:', error);
   }
 }
 
@@ -91,11 +106,12 @@ async function sendToDiscord(payload) {
     });
     
     if (!response.ok) {
-      throw new Error(`Discord API error: ${response.status}`);
+      const errorText = await response.text();
+      throw new Error(`Discord API error: ${response.status}, ${errorText}`);
     }
     console.log('Successfully sent to Discord');
   } catch (error) {
-    console.error('Error sending to Discord:', error);
+    console.error('Discord sending error:', error);
     throw error;
   }
 }
@@ -104,7 +120,7 @@ async function sendToDiscord(payload) {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
-  console.log('Environment check:');
+  console.log('Environment variables check:');
   console.log('LINE Channel Secret:', lineConfig.channelSecret ? 'Set' : 'Not set');
   console.log('LINE Channel Access Token:', lineConfig.channelAccessToken ? 'Set' : 'Not set');
   console.log('Discord Webhook URL:', DISCORD_WEBHOOK_URL ? 'Set' : 'Not set');
